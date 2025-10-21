@@ -1,88 +1,80 @@
 package handlers
 
 import (
+	"article-service/config"
+	"article-service/models"
+	"log"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Struktur data artikel
-type Post struct {
-	ID        int       `json:"id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	Category  string    `json:"category"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_date"`
-	UpdatedAt time.Time `json:"updated_date"`
-}
-
-// ✅ Simulasi database (sementara pakai slice, nanti bisa diganti MySQL)
-var posts []Post
-var nextID = 1
-
 // 🟢 CREATE
 func CreatePost(c *gin.Context) {
-	var newPost Post
-
+	var newPost models.Post
 	if err := c.ShouldBindJSON(&newPost); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
 
-	// Validasi
-	if len(newPost.Title) < 20 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Title minimal 20 karakter"})
+	// Validasi input
+	if len(newPost.Title) < 20 || len(newPost.Content) < 200 || len(newPost.Category) < 3 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Validasi gagal"})
 		return
 	}
-	if len(newPost.Content) < 200 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Content minimal 200 karakter"})
-		return
-	}
-	if len(newPost.Category) < 3 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Category minimal 3 karakter"})
-		return
-	}
+
 	if newPost.Status != "publish" && newPost.Status != "draft" && newPost.Status != "thrash" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Status harus publish/draft/thrash"})
 		return
 	}
 
-	newPost.ID = nextID
-	newPost.CreatedAt = time.Now()
-	newPost.UpdatedAt = time.Now()
-	nextID++
+	_, err := config.DB.Exec(`
+        INSERT INTO posts (title, content, category, status, created_date, updated_date)
+        VALUES (?, ?, ?, ?, NOW(), NOW())`,
+		newPost.Title, newPost.Content, newPost.Category, newPost.Status)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	posts = append(posts, newPost)
-	c.JSON(http.StatusOK, gin.H{"message": "Artikel berhasil dibuat", "data": newPost})
+	c.JSON(http.StatusOK, gin.H{"message": "Artikel berhasil dibuat"})
 }
 
-// 🟡 READ ALL (dengan paging)
+// 🟡 READ ALL
 func GetPosts(c *gin.Context) {
 	limitParam := c.Param("limit")
 	offsetParam := c.Param("offset")
-
 	limit, err1 := strconv.Atoi(limitParam)
 	offset, err2 := strconv.Atoi(offsetParam)
-	if err1 != nil || err2 != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Limit/Offset harus angka"})
+	if err1 != nil || err2 != nil || limit < 1 || offset < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Limit harus >0 dan Offset >=0"})
 		return
 	}
 
-	// Paging manual
-	start := offset
-	end := offset + limit
-	if start > len(posts) {
-		c.JSON(http.StatusOK, []Post{})
+	rows, err := config.DB.Query(`
+		SELECT id, title, content, category, status, created_date, updated_date
+		FROM posts
+		ORDER BY id DESC
+		LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		log.Println("DB Query Error:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Terjadi kesalahan di server"})
 		return
 	}
-	if end > len(posts) {
-		end = len(posts)
+	defer rows.Close()
+
+	var posts []models.Post
+	for rows.Next() {
+		var p models.Post
+		if err := rows.Scan(&p.ID, &p.Title, &p.Content, &p.Category, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		posts = append(posts, p)
 	}
 
-	c.JSON(http.StatusOK, posts[start:end])
+	c.JSON(http.StatusOK, posts)
 }
 
 // 🟢 READ ONE
@@ -94,13 +86,17 @@ func GetPostByID(c *gin.Context) {
 		return
 	}
 
-	for _, p := range posts {
-		if p.ID == id {
-			c.JSON(http.StatusOK, p)
-			return
-		}
+	var p models.Post
+	err = config.DB.QueryRow(`
+		SELECT id, title, content, category, status, created_date, updated_date
+		FROM posts WHERE id = ?`, id).Scan(&p.ID, &p.Title, &p.Content, &p.Category, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Artikel tidak ditemukan"})
+		return
 	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "Artikel tidak ditemukan"})
+
+	c.JSON(http.StatusOK, p)
 }
 
 // 🟠 UPDATE
@@ -112,24 +108,22 @@ func UpdatePost(c *gin.Context) {
 		return
 	}
 
-	var updatedPost Post
+	var updatedPost models.Post
 	if err := c.ShouldBindJSON(&updatedPost); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
 
-	for i, p := range posts {
-		if p.ID == id {
-			updatedPost.ID = p.ID
-			updatedPost.CreatedAt = p.CreatedAt
-			updatedPost.UpdatedAt = time.Now()
-			posts[i] = updatedPost
-			c.JSON(http.StatusOK, gin.H{"message": "Artikel berhasil diperbarui", "data": updatedPost})
-			return
-		}
+	_, err = config.DB.Exec(`
+		UPDATE posts SET title = ?, content = ?, category = ?, status = ?, updated_date = NOW()
+		WHERE id = ?`,
+		updatedPost.Title, updatedPost.Content, updatedPost.Category, updatedPost.Status, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{"error": "Artikel tidak ditemukan"})
+	c.JSON(http.StatusOK, gin.H{"message": "Artikel berhasil diperbarui"})
 }
 
 // 🔴 DELETE
@@ -141,13 +135,11 @@ func DeletePost(c *gin.Context) {
 		return
 	}
 
-	for i, p := range posts {
-		if p.ID == id {
-			posts = append(posts[:i], posts[i+1:]...)
-			c.JSON(http.StatusOK, gin.H{"message": "Artikel berhasil dihapus"})
-			return
-		}
+	_, err = config.DB.Exec(`DELETE FROM posts WHERE id = ?`, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{"error": "Artikel tidak ditemukan"})
+	c.JSON(http.StatusOK, gin.H{"message": "Artikel berhasil dihapus"})
 }

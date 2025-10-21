@@ -1,31 +1,35 @@
 package main
 
 import (
-	"article-service/handlers" // <--- pastikan ini sesuai dengan module di go.mod
-	"time"
+	"article-service/config"
+	"article-service/handlers"
+	"log"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	router := gin.Default()
+	// Inisialisasi database
+	if err := config.InitDB(); err != nil {
+		log.Fatal(err)
+	}
 
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
+	// Buat router Gin
+	r := gin.Default()
 
-	// Gunakan handler dari package handlers
-	router.POST("/article", handlers.CreatePost)
-	router.GET("/articles/:limit/:offset", handlers.GetPosts)
-	router.GET("/article/:id", handlers.GetPostByID)
-	router.PUT("/article/:id", handlers.UpdatePost)
-	router.DELETE("/article/:id", handlers.DeletePost)
+	// Tambahkan middleware CORS agar frontend bisa request
+	r.Use(cors.Default())
 
-	router.Run(":8080")
+	// Routes CRUD artikel
+	r.POST("/article", handlers.CreatePost)
+	r.GET("/articles/:limit/:offset", handlers.GetPosts)
+	r.GET("/article/:id", handlers.GetPostByID)
+	r.PUT("/article/:id", handlers.UpdatePost)
+	r.DELETE("/article/:id", handlers.DeletePost)
+
+	// Jalankan server di port 8080
+	if err := r.Run(":8080"); err != nil {
+		log.Fatal("Failed to run server: ", err)
+	}
 }
